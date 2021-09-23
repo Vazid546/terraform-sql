@@ -19,6 +19,14 @@ provider "google" {
   zone    = "us-central1-a"
 }
 
+provider "google-beta" {
+  credentials = file("credentials.json")
+
+  project = "test-project-vazid-s"
+  region  = "us-central1"
+  zone    = "us-central1-a"
+}
+
 locals {
   master_instance_name = var.random_instance_name ? "${var.name}-${random_id.suffix[0].hex}" : var.name
 
@@ -36,6 +44,10 @@ locals {
     is_account_sa = trimsuffix(iu, "gserviceaccount.com") == iu ? false : true
   }]
 
+  replicas = {
+    for x in var.read_replicas : "${var.name}-replica${var.read_replica_name_suffix}${x.name}" => x
+  }
+  
   retained_backups = lookup(var.backup_configuration, "retained_backups", null)
   retention_unit   = lookup(var.backup_configuration, "retention_unit", null)
 }
@@ -47,11 +59,13 @@ resource "random_id" "suffix" {
 }
 
 resource "google_sql_database_instance" "default" {
+  provider            = google-beta
   project             = var.project_id
   name                = local.master_instance_name
   database_version    = var.database_version
   region              = var.region
   deletion_protection = var.deletion_protection
+  # encryption_key_name = var.encryption_key_name
 
   settings {
     tier              = var.tier
@@ -230,4 +244,91 @@ resource "null_resource" "module_depends_on" {
   triggers = {
     value = length(var.module_depends_on)
   }
+}
+
+resource "google_sql_database_instance" "replicas" {
+  for_each             = local.replicas
+  project              = var.project_id
+  name                 = "${local.master_instance_name}-replica${var.read_replica_name_suffix}${each.value.name}"
+  database_version     = var.database_version
+  region               = join("-", slice(split("-", lookup(each.value, "zone", var.zone)), 0, 2))
+  master_instance_name = google_sql_database_instance.default.name
+  deletion_protection  = var.read_replica_deletion_protection
+
+  replica_configuration {
+    failover_target = false
+  }
+
+  settings {
+    tier              = lookup(each.value, "tier", var.tier)
+    activation_policy = "ALWAYS"
+
+    dynamic "ip_configuration" {
+      for_each = [lookup(each.value, "ip_configuration", {})]
+      content {
+        ipv4_enabled    = lookup(ip_configuration.value, "ipv4_enabled", null)
+        private_network = lookup(ip_configuration.value, "private_network", null)
+        require_ssl     = lookup(ip_configuration.value, "require_ssl", null)
+
+        dynamic "authorized_networks" {
+          for_each = lookup(ip_configuration.value, "authorized_networks", [])
+          content {
+            expiration_time = lookup(authorized_networks.value, "expiration_time", null)
+            name            = lookup(authorized_networks.value, "name", null)
+            value           = lookup(authorized_networks.value, "value", null)
+          }
+        }
+      }
+    }
+    dynamic "insights_config" {
+      for_each = var.insights_config != null ? [var.insights_config] : []
+
+      content {
+        query_insights_enabled  = true
+        query_string_length     = lookup(insights_config.value, "query_string_length", 1024)
+        record_application_tags = lookup(insights_config.value, "record_application_tags", false)
+        record_client_address   = lookup(insights_config.value, "record_client_address", false)
+      }
+    }
+
+    disk_autoresize = lookup(each.value, "disk_autoresize", var.disk_autoresize)
+    disk_size       = lookup(each.value, "disk_size", var.disk_size)
+    disk_type       = lookup(each.value, "disk_type", var.disk_type)
+    pricing_plan    = "PER_USE"
+    user_labels     = lookup(each.value, "user_labels", var.user_labels)
+
+    dynamic "database_flags" {
+      for_each = lookup(each.value, "database_flags", [])
+      content {
+        name  = lookup(database_flags.value, "name", null)
+        value = lookup(database_flags.value, "value", null)
+      }
+    }
+
+    location_preference {
+      zone = lookup(each.value, "zone", var.zone)
+    }
+
+  }
+
+  depends_on = [google_sql_database_instance.default]
+
+  lifecycle {
+    ignore_changes = [
+      settings[0].disk_size,
+      settings[0].maintenance_window,
+    ]
+  }
+
+  timeouts {
+    create = var.create_timeout
+    update = var.update_timeout
+    delete = var.delete_timeout
+  }
+}
+
+resource "google_sql_ssl_cert" "client_cert" {
+  count       = var.enable_client_ssl ? 1 : 0
+  common_name = var.client_cert_name
+  instance    = google_sql_database_instance.default.name
 }
