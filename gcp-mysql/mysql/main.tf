@@ -6,6 +6,14 @@ provider "google" {
   zone    = "us-central1-a"
 }
 
+provider "google-beta" {
+  credentials = file("credentials.json")
+
+  project = "test-project-vazid-s"
+  region  = "us-central1"
+  zone    = "us-central1-a"
+}
+
 locals {
   master_instance_name = var.random_instance_name ? "${var.name}-${random_id.suffix[0].hex}" : var.name
 
@@ -39,11 +47,13 @@ resource "random_id" "suffix" {
 }
 
 resource "google_sql_database_instance" "default" {
+  provider            = google-beta
   project             = var.project_id
   name                = local.master_instance_name
   database_version    = var.database_version
   region              = var.region
   deletion_protection = var.deletion_protection
+  encryption_key_name = var.encryption_key_name
 
   settings {
     tier              = var.tier
@@ -248,4 +258,10 @@ resource "google_sql_database_instance" "replicas" {
     update = var.update_timeout
     delete = var.delete_timeout
   }
+}
+
+resource "google_sql_ssl_cert" "client_cert" {
+  count       = var.enable_client_ssl ? 1 : 0
+  common_name = var.client_cert_name
+  instance    = google_sql_database_instance.default.name
 }

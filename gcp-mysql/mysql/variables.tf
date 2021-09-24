@@ -291,3 +291,15 @@ variable "enable_default_user" {
   type        = bool
   default     = true
 }
+
+variable "enable_client_ssl" {
+  description = "Enable or disable the creation of the client ssl"
+  type        = bool
+  default     = true
+}
+
+variable "client_cert_name" {
+  description = "name for the client certificate"
+  type        = string
+  default     = "client_cert"
+}
